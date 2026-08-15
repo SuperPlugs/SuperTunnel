@@ -1,122 +1,153 @@
-## SuperTunnel
+# SuperTunnel
 
-SuperTunnel is an open-source, browser-based VPN controller. It ships with:
+SuperTunnel is an open-source browser proxy controller. The Chrome extension applies a PAC script or fixed proxy through the Manifest V3 `chrome.proxy` API, while the included Next.js service exposes the connection profile consumed by the extension.
 
-- **Web Extension (MV3)**: Background service worker, popup UI, and Vite+CRX build.
-- **Next.js UI**: A modern React/Tailwind app scaffold for your server-side management UI.
+SuperTunnel affects browser traffic only. It does not install an operating-system VPN driver or create a VPN tunnel by itself.
 
-The extension configures a browser proxy via the `proxy` API and talks to your server to fetch either a PAC script URL or fixed proxy settings. This keeps all traffic inside the browser, without requiring OS-level drivers.
+## Features
 
-### Features
-- **One-click connect/disconnect** via popup
-- **Dynamic proxy configuration** from your API: PAC or fixed proxy
-- **Status badge** and basic persisted state in `chrome.storage`
-- **Vite + CRX** build for a compact MV3 bundle
+- Manifest V3 Chrome/Chromium extension
+- Local fixed-proxy mode without a backend
+- Remote PAC or fixed-proxy profiles from a validated API
+- Optional bearer-token authentication
+- Runtime permission requests for custom API origins
+- Persisted configuration and connection-state reconciliation
+- Strict TypeScript, ESLint, production builds, and GitHub Actions CI
 
-## Getting Started
+## Architecture
 
-### Prerequisites
-- Node.js 20.18+ and npm
-- Chrome/Chromium (MV3), optionally Firefox (MV3 support varies)
+```text
+Extension popup
+    -> chrome.runtime messages
+    -> background service worker
+        -> local proxy configuration
+        -> or POST /api/connect
+    -> chrome.proxy.settings
 
-### Install dependencies
-```bash
-npm install
+Next.js service
+    -> environment-backed proxy profile
+    -> GET /api/status
+    -> POST /api/connect
 ```
 
-### Configure the API origin
-The extension reads the API origin from `VITE_API_ORIGIN` at build-time.
+## Requirements
 
-Examples:
-- PowerShell (Windows):
+- Node.js 20.19 or newer
+- pnpm 10.29.1
+- Chrome or another Chromium browser with Manifest V3 proxy support
+- A reachable HTTP, HTTPS, or PAC proxy for actual traffic forwarding
+
+## Setup
+
+```bash
+pnpm install
+```
+
+Create a local environment file from the tracked example:
+
+```bash
+cp .env.example .env.local
+```
+
+On PowerShell:
+
 ```powershell
-$env:VITE_API_ORIGIN = 'https://api.example.com'
-npm run build:extension
+Copy-Item .env.example .env.local
 ```
 
-- .env file (Vite automatically loads):
-```
-VITE_API_ORIGIN=https://api.example.com
-```
+Configure either `SUPERTUNNEL_PAC_URL` or both `SUPERTUNNEL_PROXY_HOST` and `SUPERTUNNEL_PROXY_PORT`.
 
-### Build the extension
+## Run the Controller API
+
 ```bash
-# Optional: generate simple placeholder icons
-npm run gen:icons
-
-# Build the web extension
-npm run build:extension
+pnpm dev
 ```
 
-The bundle will be produced in `dist-extension/`.
+The status dashboard and API run at `http://localhost:9002`:
 
-### Load in Chrome
-1. Open `chrome://extensions`
-2. Enable Developer mode
-3. Click “Load unpacked” and select the `dist-extension` directory
+- `GET /api/status`
+- `POST /api/connect`
 
-### Run the Next.js app (optional)
+## Build the Extension
+
+The default development endpoint is `http://localhost:9002/api`. Override it with `VITE_API_ORIGIN` when building for another deployment.
+
 ```bash
-npm run dev
+pnpm build:extension
 ```
-Open `http://localhost:9002`.
 
-## How it Works
+Load `dist-extension/` from `chrome://extensions` using **Load unpacked**.
 
-- `extension/background.ts`
-  - Persists connection state in `chrome.storage.local`
-  - On “Connect”, posts to `POST {VITE_API_ORIGIN}/connect`
-  - Expects a response with either:
-    - `{ pacUrl: string }` OR
-    - `{ proxy: { host: string; port: number; scheme?: 'http'|'https' }, bypassList?: string[] }`
-  - Applies the proxy via `chrome.proxy.settings.set`
+The popup supports two connection modes:
 
-- `extension/popup.html` + `extension/popup.ts`
-  - Simple UI to set endpoint/token and connect/disconnect
-  - Sends messages to the background worker (`get_state`, `connect`, `disconnect`, `set_endpoint`, `set_token`)
+- **Remote API:** obtains a validated PAC or fixed-proxy profile from `{API_ENDPOINT}/connect`.
+- **Local proxy:** directly applies the host, port, and scheme entered in the popup.
 
-- `extension/manifest.ts`
-  - MV3 manifest generated at build time
-  - Uses `VITE_API_ORIGIN` to populate `host_permissions`
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `VITE_API_ORIGIN` | API base URL embedded in the extension build |
+| `SUPERTUNNEL_PAC_URL` | PAC script URL returned to clients |
+| `SUPERTUNNEL_PROXY_HOST` | Fixed proxy hostname or IP address |
+| `SUPERTUNNEL_PROXY_PORT` | Fixed proxy port from 1 to 65535 |
+| `SUPERTUNNEL_PROXY_SCHEME` | `http` or `https` |
+| `SUPERTUNNEL_BYPASS_LIST` | Comma-separated Chrome proxy bypass rules |
+| `SUPERTUNNEL_API_TOKEN` | Optional bearer token required by `/api/connect` |
+
+PAC configuration takes precedence when both PAC and fixed-proxy variables are present.
 
 ## API Contract
-```
-POST {API_ORIGIN}/connect
+
+Request:
+
+```http
+POST /api/connect
 Content-Type: application/json
-Authorization: Bearer <token>      # optional
-Body: { "client": "extension" }
+Authorization: Bearer <token>
 
-200 OK
-{ "pacUrl": "https://.../proxy.pac" }
-  - or -
-{ "proxy": { "host": "127.0.0.1", "port": 8080, "scheme": "http" }, "bypassList": ["<local>"] }
+{"client":"extension"}
 ```
-If your API differs, update `extension/background.ts` accordingly.
 
-## Development
-- `npm run dev:extension` – start Vite in watch mode for the extension
-- `npm run build:extension` – build the MV3 extension
-- `npm run gen:icons` – generate simple placeholder icons
+PAC response:
 
-## Browser Permissions
-The MV3 manifest requests:
-- `proxy`, `storage`, `alarms`
-And `host_permissions` based on `VITE_API_ORIGIN`.
+```json
+{"pacUrl":"https://proxy.example.com/proxy.pac"}
+```
 
-## Contributing
-Contributions are welcome! Please:
-- Open an issue to discuss substantial changes
-- Submit a focused pull request with clear rationale
-- Follow the existing code style and TypeScript conventions
+Fixed proxy response:
 
-By participating, you agree to uphold a respectful, inclusive environment. We recommend adopting the Contributor Covenant as a Code of Conduct.
+```json
+{
+  "proxy": {"host":"127.0.0.1","port":8080,"scheme":"http"},
+  "bypassList": ["<local>"]
+}
+```
+
+## Development Commands
+
+```bash
+pnpm dev                 # Next.js development server on port 9002
+pnpm dev:extension       # Vite extension development build
+pnpm lint                # ESLint
+pnpm typecheck           # TypeScript without emit
+pnpm build               # Next.js production build
+pnpm build:extension     # Manifest V3 production bundle
+pnpm check               # Complete local verification pipeline
+```
 
 ## Security
-If you discover a security issue, please report it privately first. Avoid filing public issues for sensitive vulnerabilities until a fix is available.
+
+- Use HTTPS for production API and PAC endpoints.
+- Set `SUPERTUNNEL_API_TOKEN` for any controller exposed beyond localhost.
+- The extension stores the bearer token in `chrome.storage.session`, not persistent local storage.
+- Custom API origins require an explicit Chrome permission prompt.
+- Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
+
+## Contributing
+
+Focused issues and pull requests are welcome. Run `pnpm check` before submitting changes and include browser-level verification for proxy behavior. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
-MIT. See `LICENSE` for details.
 
-## Authors
-- Benny 01r <benny01r@gmail.com>
-- Irshad Siddi <mohammadirshadsiddi@gmail.com>
+MIT. See [LICENSE](LICENSE).

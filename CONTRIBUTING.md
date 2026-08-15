@@ -4,20 +4,26 @@ Thanks for your interest in contributing! We welcome improvements across code, d
 
 ## Getting started
 - Fork and clone the repo
-- Install dependencies: `npm install`
-- Build the extension: `npm run build:extension`
+- Install dependencies: `pnpm install --frozen-lockfile`
+- Run the complete verification pipeline: `pnpm check`
+- Build the extension: `pnpm build:extension`
 - Load the unpacked extension from `dist-extension/` in Chrome
 
 ## Development commands
-- `npm run dev:extension` – Vite dev server for the extension
-- `npm run build:extension` – build the MV3 extension bundle
-- `npm run gen:icons` – generate placeholder icons (replace with real assets for release)
+- `pnpm dev` - Next.js controller API and status dashboard
+- `pnpm dev:extension` - Vite development build for the extension
+- `pnpm lint` - run ESLint
+- `pnpm typecheck` - run strict TypeScript validation
+- `pnpm build:extension` - build the MV3 extension bundle
+- `pnpm check` - run all repository checks and production builds
 
 ## Code guidelines
 - Use TypeScript and meaningful names; optimize for clarity and readability
 - Keep functions small with early returns and clear error handling
 - Match existing formatting; avoid large unrelated diffs
 - Prefer explicit, typed APIs and avoid `any`
+- Validate all data crossing extension, browser, and HTTP boundaries
+- Keep requested browser permissions minimal and document new permissions
 
 ## Commit and PR process
 1. Create a feature branch
