@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/.playwright-cli/
 
 # next.js
 /.next/
@@ -39,6 +40,7 @@ next-env.d.ts
 
 .genkit/*
 .env*
+!.env.example
 
 # build file
 /dist-extension
