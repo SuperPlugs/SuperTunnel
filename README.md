@@ -136,6 +136,15 @@ pnpm build:extension     # Manifest V3 production bundle
 pnpm check               # Complete local verification pipeline
 ```
 
+The extension dev server uses port `5173` with strict port checking. If that
+port is occupied, stop the existing Vite process instead of starting a second
+server on another port; CRXJS-generated extension assets must all use the same
+development origin.
+
+`@crxjs/vite-plugin@2.7.1` is patched through pnpm to replace every generated
+live-reload placeholder. Remove the patch after upgrading to an upstream
+release that includes the same fix.
+
 ## Security
 
 - Use HTTPS for production API and PAC endpoints.
