@@ -16,22 +16,58 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
-import { endpointPermissionPattern, normalizeApiEndpoint } from "@/lib/contracts";
+import {
+  endpointPermissionPattern,
+  extensionStateSchema,
+  normalizeApiEndpoint,
+  type ConnectionMode,
+  type ExtensionState,
+} from "@/lib/contracts";
 import { Icons } from "@/components/icons";
 
-type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
-type ConnectionMode = "local" | "remote-pac" | "remote-fixed";
+function runtimeError(response: unknown): string | null {
+  if (
+    response &&
+    typeof response === "object" &&
+    "error" in response &&
+    typeof response.error === "string"
+  ) {
+    return response.error;
+  }
+  return null;
+}
 
-interface ExtensionState {
-  state: ConnectionState;
-  lastError: string | null;
-  endpoint: string;
-  localMode: boolean;
-  localProxyHost: string;
-  localProxyPort: number | null;
-  localProxyScheme: "http" | "https";
-  connectedAt: number | null;
-  activeMode: ConnectionMode | null;
+function parseExtensionState(response: unknown): ExtensionState {
+  const parsed = extensionStateSchema.safeParse(response);
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  throw new Error(
+    runtimeError(response) ?? "The extension background service returned an invalid response",
+  );
+}
+
+async function sendStateMessage(message: Record<string, unknown>): Promise<ExtensionState> {
+  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+    throw new Error("Chrome extension APIs are unavailable. Reload the unpacked extension.");
+  }
+  return parseExtensionState(await chrome.runtime.sendMessage(message));
+}
+
+async function sendCommand(message: Record<string, unknown>): Promise<void> {
+  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+    throw new Error("Chrome extension APIs are unavailable. Reload the unpacked extension.");
+  }
+
+  const response: unknown = await chrome.runtime.sendMessage(message);
+  const error = runtimeError(response);
+  if (error) {
+    throw new Error(error);
+  }
+  if (!response || typeof response !== "object" || !("ok" in response) || response.ok !== true) {
+    throw new Error("The extension background service returned an invalid command response");
+  }
 }
 
 function modeLabel(mode: ConnectionMode | null): string {
@@ -59,6 +95,7 @@ export default function PopupView() {
   const [logs, setLogs] = useState<string[]>(["SuperTunnel is ready."]);
   const [now, setNow] = useState<number | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [initializationError, setInitializationError] = useState<string | null>(null);
 
   const addLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -74,24 +111,20 @@ export default function PopupView() {
       nextState.localProxyPort === null ? "" : String(nextState.localProxyPort),
     );
     setLocalScheme(nextState.localProxyScheme);
+    setInitializationError(null);
   }, []);
 
   const refresh = useCallback(async () => {
-    const nextState = (await chrome.runtime.sendMessage({ type: "get_state" })) as ExtensionState;
+    const nextState = await sendStateMessage({ type: "get_state" });
     applyState(nextState);
   }, [applyState]);
 
   useEffect(() => {
-    chrome.runtime.sendMessage({ type: "get_state" }).then(
-      (nextState: ExtensionState | undefined) => {
-        if (nextState) {
-          applyState(nextState);
-        } else {
-          addLog("Unable to read extension state");
-        }
-      },
-      (error: unknown) => addLog(`Unable to read extension state: ${String(error)}`),
-    );
+    void sendStateMessage({ type: "get_state" }).then(applyState).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setInitializationError(message);
+      addLog(`Unable to read extension state: ${message}`);
+    });
   }, [addLog, applyState]);
 
   useEffect(() => {
@@ -124,7 +157,7 @@ export default function PopupView() {
     setIsBusy(true);
     try {
       if (state.state === "connected") {
-        const nextState = (await chrome.runtime.sendMessage({ type: "disconnect" })) as ExtensionState;
+        const nextState = await sendStateMessage({ type: "disconnect" });
         applyState(nextState);
         addLog(nextState.state === "disconnected" ? "Proxy disconnected." : nextState.lastError ?? "Disconnect failed.");
         return;
@@ -140,10 +173,10 @@ export default function PopupView() {
         }
       }
 
-      const settings: Array<Promise<unknown>> = [
-        chrome.runtime.sendMessage({ type: "set_endpoint", endpoint }),
-        chrome.runtime.sendMessage({ type: "set_local_mode", enabled: localMode }),
-        chrome.runtime.sendMessage({
+      const settings: Array<Promise<void>> = [
+        sendCommand({ type: "set_endpoint", endpoint }),
+        sendCommand({ type: "set_local_mode", enabled: localMode }),
+        sendCommand({
           type: "set_local_proxy",
           host: localHost,
           port: localPort ? Number(localPort) : null,
@@ -151,15 +184,11 @@ export default function PopupView() {
         }),
       ];
       if (tokenChanged) {
-        settings.push(chrome.runtime.sendMessage({ type: "set_token", token }));
+        settings.push(sendCommand({ type: "set_token", token }));
       }
-      const responses = await Promise.all(settings) as Array<{ ok?: boolean; error?: string }>;
-      const failedSetting = responses.find((response) => response.ok === false);
-      if (failedSetting) {
-        throw new Error(failedSetting.error ?? "Unable to save connection settings");
-      }
+      await Promise.all(settings);
 
-      const nextState = (await chrome.runtime.sendMessage({ type: "connect" })) as ExtensionState;
+      const nextState = await sendStateMessage({ type: "connect" });
       applyState(nextState);
       setToken("");
       setTokenChanged(false);
@@ -216,6 +245,12 @@ export default function PopupView() {
       </header>
 
       <main className="flex flex-col gap-4">
+        {initializationError && (
+          <Alert variant="destructive">
+            <AlertTitle>Extension startup failed</AlertTitle>
+            <AlertDescription>{initializationError}</AlertDescription>
+          </Alert>
+        )}
         <Card>
           <CardContent className="flex flex-col items-center gap-4 p-4">
             <div className={`flex items-center gap-2 font-semibold ${statusInfo.color}`}>
@@ -227,7 +262,7 @@ export default function PopupView() {
               variant={statusInfo.variant}
               className="h-12 w-full text-base"
               onClick={() => void onConnectToggle()}
-              disabled={isBusy || status === "connecting"}
+              disabled={isBusy || !state || status === "connecting"}
             >
               <Power className="mr-2 h-5 w-5" />
               {statusInfo.button}

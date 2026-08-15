@@ -1,24 +1,14 @@
 import {
   connectResponseSchema,
   DEFAULT_API_ENDPOINT,
+  extensionStateSchema,
   normalizeApiEndpoint,
-  type ProxyScheme,
+  type ConnectionMode,
+  type ConnectionState,
+  type ExtensionState,
 } from "../src/lib/contracts";
 
-type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
-type ConnectionMode = "local" | "remote-pac" | "remote-fixed";
-
-interface StoredState {
-  state: ConnectionState;
-  lastError: string | null;
-  endpoint: string;
-  localMode: boolean;
-  localProxyHost: string;
-  localProxyPort: number | null;
-  localProxyScheme: ProxyScheme;
-  connectedAt: number | null;
-  activeMode: ConnectionMode | null;
-}
+type StoredState = ExtensionState;
 
 const DEFAULT_ENDPOINT = normalizeApiEndpoint(
   import.meta.env.VITE_API_ORIGIN || DEFAULT_API_ENDPOINT,
@@ -40,7 +30,13 @@ async function readState(): Promise<StoredState> {
   const stored = await chrome.storage.local.get(
     DEFAULT_STATE as unknown as Record<string, unknown>,
   );
-  return stored as unknown as StoredState;
+  const parsed = extensionStateSchema.safeParse(stored);
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  await chrome.storage.local.set(DEFAULT_STATE);
+  return DEFAULT_STATE;
 }
 
 async function writeState(partial: Partial<StoredState>): Promise<void> {
@@ -308,6 +304,21 @@ async function initialize(): Promise<void> {
   await reconcileProxyState();
 }
 
+async function initializeSafely(): Promise<void> {
+  try {
+    await initialize();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await writeState({
+      state: "error",
+      lastError: `Extension initialization failed: ${message}`,
+      connectedAt: null,
+      activeMode: null,
+    }).catch(() => undefined);
+    await setBadge("error").catch(() => undefined);
+  }
+}
+
 let operationQueue: Promise<void> = Promise.resolve();
 
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -369,11 +380,11 @@ async function handleMessage(request: unknown): Promise<unknown> {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  void initialize();
+  void initializeSafely();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void initialize();
+  void initializeSafely();
 });
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
@@ -389,4 +400,4 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   return true;
 });
 
-void initialize();
+void initializeSafely();

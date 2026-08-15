@@ -4,11 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-patchedDependencies:
-  '@crxjs/vite-plugin@2.7.1':
-    hash: abd58b91f70f8eef9e77728f38ba21ffcf5265b9e9f978abbe064ce57d8ae681
-    path: patches/@crxjs__vite-plugin@2.7.1.patch
-
 importers:
 
   .:
@@ -52,7 +47,7 @@ importers:
     devDependencies:
       '@crxjs/vite-plugin':
         specifier: ^2.7.1
-        version: 2.7.1(patch_hash=abd58b91f70f8eef9e77728f38ba21ffcf5265b9e9f978abbe064ce57d8ae681)(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
+        version: 2.7.1(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
       '@tailwindcss/postcss':
         specifier: ^4.3.3
         version: 4.3.3
@@ -2951,7 +2946,7 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@crxjs/vite-plugin@2.7.1(patch_hash=abd58b91f70f8eef9e77728f38ba21ffcf5265b9e9f978abbe064ce57d8ae681)(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))':
+  '@crxjs/vite-plugin@2.7.1(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))':
     dependencies:
       '@webcomponents/custom-elements': 1.6.0
       acorn-walk: 8.3.5

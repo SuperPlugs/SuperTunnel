@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   connectResponseSchema,
   endpointPermissionPattern,
+  extensionStateSchema,
   normalizeApiEndpoint,
 } from "./contracts";
 
@@ -38,6 +39,33 @@ describe("connection response validation", () => {
     const result = connectResponseSchema.safeParse({
       proxy: { host: "127.0.0.1", port: 70_000, scheme: "http" },
     });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("extension state validation", () => {
+  it("accepts a complete extension state", () => {
+    const result = extensionStateSchema.safeParse({
+      state: "connected",
+      lastError: null,
+      endpoint: "http://localhost:9002/api",
+      localMode: true,
+      localProxyHost: "127.0.0.1",
+      localProxyPort: 40000,
+      localProxyScheme: "http",
+      connectedAt: Date.now(),
+      activeMode: "local",
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects error envelopes returned instead of state", () => {
+    const result = extensionStateSchema.safeParse({
+      ok: false,
+      error: "Background worker failed",
+    });
+
     expect(result.success).toBe(false);
   });
 });

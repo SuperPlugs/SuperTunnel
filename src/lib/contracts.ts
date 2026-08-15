@@ -3,7 +3,6 @@ import { z } from "zod";
 export const DEFAULT_API_ENDPOINT = "http://localhost:9002/api";
 
 export const proxySchemeSchema = z.enum(["http", "https"]);
-
 const httpUrlSchema = z
   .string()
   .trim()
@@ -12,6 +11,30 @@ const httpUrlSchema = z
     const protocol = new URL(value).protocol;
     return protocol === "http:" || protocol === "https:";
   }, "URL must use http or https");
+
+export const connectionStateSchema = z.enum([
+  "disconnected",
+  "connecting",
+  "connected",
+  "error",
+]);
+export const connectionModeSchema = z.enum([
+  "local",
+  "remote-pac",
+  "remote-fixed",
+]);
+
+export const extensionStateSchema = z.object({
+  state: connectionStateSchema,
+  lastError: z.string().nullable(),
+  endpoint: httpUrlSchema,
+  localMode: z.boolean(),
+  localProxyHost: z.string(),
+  localProxyPort: z.number().int().min(1).max(65_535).nullable(),
+  localProxyScheme: proxySchemeSchema,
+  connectedAt: z.number().int().nonnegative().nullable(),
+  activeMode: connectionModeSchema.nullable(),
+});
 
 const fixedProxySchema = z.object({
   proxy: z.object({
@@ -37,6 +60,9 @@ export const connectResponseSchema = z.union([
 
 export type ConnectResponse = z.infer<typeof connectResponseSchema>;
 export type ProxyScheme = z.infer<typeof proxySchemeSchema>;
+export type ConnectionState = z.infer<typeof connectionStateSchema>;
+export type ConnectionMode = z.infer<typeof connectionModeSchema>;
+export type ExtensionState = z.infer<typeof extensionStateSchema>;
 
 export function normalizeApiEndpoint(value: string): string {
   const url = new URL(value.trim());

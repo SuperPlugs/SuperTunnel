@@ -11,7 +11,7 @@ Thanks for your interest in contributing! We welcome improvements across code, d
 
 ## Development commands
 - `pnpm dev` - Next.js controller API and status dashboard
-- `pnpm dev:extension` - Vite development build for the extension
+- `pnpm dev:extension` - watch a self-contained Vite build for the extension; reload it in `chrome://extensions` after changes
 - `pnpm lint` - run ESLint
 - `pnpm typecheck` - run strict TypeScript validation
 - `pnpm build:extension` - build the MV3 extension bundle

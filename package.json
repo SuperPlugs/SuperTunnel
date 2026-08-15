@@ -8,10 +8,7 @@
     "node": ">=20.19.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "unrs-resolver"],
-    "patchedDependencies": {
-      "@crxjs/vite-plugin@2.7.1": "patches/@crxjs__vite-plugin@2.7.1.patch"
-    }
+    "onlyBuiltDependencies": ["esbuild", "unrs-resolver"]
   },
   "contributors": [
     "Benny 01r <benny01r@gmail.com>",
@@ -24,7 +21,7 @@
     "lint": "eslint src extension scripts vite.config.ts next.config.ts eslint.config.mjs postcss.config.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "dev:extension": "vite --config vite.config.ts",
+    "dev:extension": "vite build --watch --config vite.config.ts",
     "build:extension": "vite build --config vite.config.ts",
     "gen:icons": "node scripts/gen-icons.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build:extension && pnpm build"

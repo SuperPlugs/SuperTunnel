@@ -13,11 +13,6 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), crx({ manifest: createManifest(apiEndpoint) })],
-    server: {
-      host: 'localhost',
-      port: 5173,
-      strictPort: true,
-    },
     build: {
       outDir: 'dist-extension',
       emptyOutDir: true,

@@ -128,7 +128,7 @@ Fixed proxy response:
 
 ```bash
 pnpm dev                 # Next.js development server on port 9002
-pnpm dev:extension       # Vite extension development build
+pnpm dev:extension       # Watch a self-contained extension build
 pnpm lint                # ESLint
 pnpm typecheck           # TypeScript without emit
 pnpm build               # Next.js production build
@@ -136,14 +136,11 @@ pnpm build:extension     # Manifest V3 production bundle
 pnpm check               # Complete local verification pipeline
 ```
 
-The extension dev server uses port `5173` with strict port checking. If that
-port is occupied, stop the existing Vite process instead of starting a second
-server on another port; CRXJS-generated extension assets must all use the same
-development origin.
-
-`@crxjs/vite-plugin@2.7.1` is patched through pnpm to replace every generated
-live-reload placeholder. Remove the patch after upgrading to an upstream
-release that includes the same fix.
+`pnpm dev:extension` watches and rebuilds the self-contained MV3 bundle in
+`dist-extension/`. Load that directory as an unpacked extension and click
+Chrome's extension reload button after a change. This keeps the installed
+extension independent of a development WebSocket and works with Chrome's
+extension security policy.
 
 ## Security
 
