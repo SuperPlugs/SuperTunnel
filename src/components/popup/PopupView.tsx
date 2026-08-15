@@ -1,187 +1,300 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Clock,
+  Globe,
+  Loader2,
+  Power,
+  ShieldCheck,
+  ShieldOff,
+} from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Globe, Clock, ArrowRightLeft, Loader2, Power, ShieldCheck, ShieldOff } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { endpointPermissionPattern, normalizeApiEndpoint } from "@/lib/contracts";
 import { Icons } from "@/components/icons";
 
 type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
+type ConnectionMode = "local" | "remote-pac" | "remote-fixed";
+
+interface ExtensionState {
+  state: ConnectionState;
+  lastError: string | null;
+  endpoint: string;
+  localMode: boolean;
+  localProxyHost: string;
+  localProxyPort: number | null;
+  localProxyScheme: "http" | "https";
+  connectedAt: number | null;
+  activeMode: ConnectionMode | null;
+}
+
+function modeLabel(mode: ConnectionMode | null): string {
+  switch (mode) {
+    case "local":
+      return "Local proxy";
+    case "remote-pac":
+      return "Remote PAC profile";
+    case "remote-fixed":
+      return "Remote fixed proxy";
+    default:
+      return "Not connected";
+  }
+}
 
 export default function PopupView() {
-  const [status, setStatus] = useState<ConnectionState>("disconnected");
+  const [state, setState] = useState<ExtensionState | null>(null);
   const [endpoint, setEndpoint] = useState("");
   const [token, setToken] = useState("");
+  const [tokenChanged, setTokenChanged] = useState(false);
   const [localMode, setLocalMode] = useState(false);
-  const [localHost, setLocalHost] = useState("");
-  const [localPort, setLocalPort] = useState("");
+  const [localHost, setLocalHost] = useState("127.0.0.1");
+  const [localPort, setLocalPort] = useState("8080");
   const [localScheme, setLocalScheme] = useState<"http" | "https">("http");
-  const [logs, setLogs] = useState<string[]>(["Welcome to SuperTunnel."]);
-  const [uptime, setUptime] = useState(0);
-  const [data, setData] = useState({ down: 0, up: 0 });
-  const [analysis, setAnalysis] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [logs, setLogs] = useState<string[]>(["SuperTunnel is ready."]);
+  const [now, setNow] = useState<number | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
 
-  const addLog = (message: string) => {
+  const addLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
-    setLogs((prev) => [`[${timestamp}] ${message}`, ...prev].slice(0, 50));
-  };
-
-  const refresh = async () => {
-    const s = await chrome.runtime.sendMessage({ type: "get_state" });
-    setStatus(s?.state || "disconnected");
-    setEndpoint(s?.endpoint || "");
-    setLocalMode(Boolean(s?.localMode));
-    setLocalHost(s?.localProxyHost || "");
-    setLocalPort(s?.localProxyPort != null ? String(s.localProxyPort) : "");
-    setLocalScheme(s?.localProxyScheme === "https" ? "https" : "http");
-  };
-
-  useEffect(() => {
-    refresh();
+    setLogs((previous) => [`[${timestamp}] ${message}`, ...previous].slice(0, 50));
   }, []);
 
-  useEffect(() => {
-    let uptimeInterval: any;
-    let dataInterval: any;
-    if (status === "connected") {
-      setUptime(0);
-      setData({ down: 0, up: 0 });
-      uptimeInterval = setInterval(() => setUptime((s) => s + 1), 1000);
-      dataInterval = setInterval(() => {
-        setData((d) => ({ down: d.down + Math.random() * 1.5, up: d.up + Math.random() * 0.5 }));
-      }, 1500);
-    }
-    return () => {
-      clearInterval(uptimeInterval);
-      clearInterval(dataInterval);
-    };
-  }, [status]);
+  const applyState = useCallback((nextState: ExtensionState) => {
+    setState(nextState);
+    setEndpoint(nextState.endpoint);
+    setLocalMode(nextState.localMode);
+    setLocalHost(nextState.localProxyHost);
+    setLocalPort(
+      nextState.localProxyPort === null ? "" : String(nextState.localProxyPort),
+    );
+    setLocalScheme(nextState.localProxyScheme);
+  }, []);
 
-  const formatUptime = (totalSeconds: number) => {
-    const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, "0");
-    const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, "0");
+  const refresh = useCallback(async () => {
+    const nextState = (await chrome.runtime.sendMessage({ type: "get_state" })) as ExtensionState;
+    applyState(nextState);
+  }, [applyState]);
+
+  useEffect(() => {
+    chrome.runtime.sendMessage({ type: "get_state" }).then(
+      (nextState: ExtensionState | undefined) => {
+        if (nextState) {
+          applyState(nextState);
+        } else {
+          addLog("Unable to read extension state");
+        }
+      },
+      (error: unknown) => addLog(`Unable to read extension state: ${String(error)}`),
+    );
+  }, [addLog, applyState]);
+
+  useEffect(() => {
+    if (state?.state !== "connected") {
+      return;
+    }
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [state?.state]);
+
+  const uptime = useMemo(() => {
+    if (!state?.connectedAt || state.state !== "connected") {
+      return "00:00:00";
+    }
+    const totalSeconds = Math.max(
+      0,
+      Math.floor(((now ?? state.connectedAt) - state.connectedAt) / 1_000),
+    );
+    const hours = Math.floor(totalSeconds / 3_600).toString().padStart(2, "0");
+    const minutes = Math.floor((totalSeconds % 3_600) / 60).toString().padStart(2, "0");
     const seconds = (totalSeconds % 60).toString().padStart(2, "0");
     return `${hours}:${minutes}:${seconds}`;
-  };
+  }, [now, state]);
 
   const onConnectToggle = async () => {
-    if (status === "connected") {
-      await chrome.runtime.sendMessage({ type: "disconnect" });
-      addLog("Connection terminated.");
-    } else if (status === "disconnected" || status === "error") {
-      if (endpoint) await chrome.runtime.sendMessage({ type: "set_endpoint", endpoint });
-      if (token) await chrome.runtime.sendMessage({ type: "set_token", token });
-      await chrome.runtime.sendMessage({ type: "set_local_mode", enabled: localMode });
-      await chrome.runtime.sendMessage({ type: "set_local_proxy", host: localHost, port: localPort ? Number(localPort) : undefined, scheme: localScheme });
-      await chrome.runtime.sendMessage({ type: "connect" });
-      addLog(localMode ? "Connecting via local proxy..." : "Connecting via API...");
+    if (isBusy || !state) {
+      return;
     }
-    await refresh();
+
+    setIsBusy(true);
+    try {
+      if (state.state === "connected") {
+        const nextState = (await chrome.runtime.sendMessage({ type: "disconnect" })) as ExtensionState;
+        applyState(nextState);
+        addLog(nextState.state === "disconnected" ? "Proxy disconnected." : nextState.lastError ?? "Disconnect failed.");
+        return;
+      }
+
+      if (!localMode) {
+        const normalizedEndpoint = normalizeApiEndpoint(endpoint);
+        const permissionGranted = await chrome.permissions.request({
+          origins: [endpointPermissionPattern(normalizedEndpoint)],
+        });
+        if (!permissionGranted) {
+          throw new Error("Permission to contact the API endpoint was denied");
+        }
+      }
+
+      const settings: Array<Promise<unknown>> = [
+        chrome.runtime.sendMessage({ type: "set_endpoint", endpoint }),
+        chrome.runtime.sendMessage({ type: "set_local_mode", enabled: localMode }),
+        chrome.runtime.sendMessage({
+          type: "set_local_proxy",
+          host: localHost,
+          port: localPort ? Number(localPort) : null,
+          scheme: localScheme,
+        }),
+      ];
+      if (tokenChanged) {
+        settings.push(chrome.runtime.sendMessage({ type: "set_token", token }));
+      }
+      const responses = await Promise.all(settings) as Array<{ ok?: boolean; error?: string }>;
+      const failedSetting = responses.find((response) => response.ok === false);
+      if (failedSetting) {
+        throw new Error(failedSetting.error ?? "Unable to save connection settings");
+      }
+
+      const nextState = (await chrome.runtime.sendMessage({ type: "connect" })) as ExtensionState;
+      applyState(nextState);
+      setToken("");
+      setTokenChanged(false);
+      if (nextState.state === "connected") {
+        addLog(`Connected using ${modeLabel(nextState.activeMode)}.`);
+      } else {
+        addLog(nextState.lastError ?? "Connection failed.");
+      }
+    } catch (error) {
+      addLog(error instanceof Error ? error.message : String(error));
+      await refresh().catch(() => undefined);
+    } finally {
+      setIsBusy(false);
+    }
   };
 
-  const getStatusInfo = useMemo(() => {
-    switch (status) {
-      case "connected":
-        return { text: "Connected", color: "text-green-500", icon: <ShieldCheck className="h-5 w-5 text-green-500" />, variant: "destructive" as const, button: "Disconnect" };
-      case "connecting":
-        return { text: "Connecting...", color: "text-yellow-500", icon: <Loader2 className="h-5 w-5 animate-spin text-yellow-500" />, variant: "secondary" as const, button: "Connecting" };
-      case "error":
-        return { text: "Error", color: "text-red-500", icon: <ShieldOff className="h-5 w-5 text-red-500" />, variant: "default" as const, button: "Retry" };
-      default:
-        return { text: "Disconnected", color: "text-red-500", icon: <ShieldOff className="h-5 w-5 text-red-500" />, variant: "default" as const, button: "Connect" };
-    }
-  }, [status]);
-
-  const analyzeLogs = async () => {
-    setIsAnalyzing(true);
-    setAnalysis(null);
-    addLog("AI analysis started...");
-    setTimeout(() => {
-      const mock = `Stable connection with low latency. If issues persist, switch scheme or server.`;
-      setAnalysis(mock);
-      addLog("AI analysis complete.");
-      setIsAnalyzing(false);
-    }, 1500);
-  };
+  const status = state?.state ?? "disconnected";
+  const statusInfo = {
+    connected: {
+      text: "Connected",
+      color: "text-green-600",
+      icon: <ShieldCheck className="h-5 w-5 text-green-600" />,
+      button: "Disconnect",
+      variant: "destructive" as const,
+    },
+    connecting: {
+      text: "Connecting",
+      color: "text-amber-600",
+      icon: <Loader2 className="h-5 w-5 animate-spin text-amber-600" />,
+      button: "Connecting",
+      variant: "secondary" as const,
+    },
+    error: {
+      text: "Connection error",
+      color: "text-red-600",
+      icon: <ShieldOff className="h-5 w-5 text-red-600" />,
+      button: "Retry",
+      variant: "default" as const,
+    },
+    disconnected: {
+      text: "Disconnected",
+      color: "text-red-600",
+      icon: <ShieldOff className="h-5 w-5 text-red-600" />,
+      button: "Connect",
+      variant: "default" as const,
+    },
+  }[status];
 
   return (
-    <div className="w-full bg-background text-foreground flex flex-col items-center p-4">
-      <header className="w-full flex items-center justify-center gap-2 pb-4">
+    <div className="w-full min-w-[320px] bg-background p-4 text-foreground">
+      <header className="flex items-center justify-center gap-2 pb-4">
         <Icons.logo className="h-6 w-6 text-primary" />
-        <h1 className="text-xl font-bold text-foreground">SuperTunnel</h1>
+        <h1 className="text-xl font-bold">SuperTunnel</h1>
       </header>
 
-      <main className="w-full flex flex-col gap-4">
+      <main className="flex flex-col gap-4">
         <Card>
           <CardContent className="flex flex-col items-center gap-4 p-4">
-            <div className="flex items-center gap-2">
-              {getStatusInfo.icon}
-              <span className={`text-lg font-semibold ${getStatusInfo.color}`}>{getStatusInfo.text}</span>
+            <div className={`flex items-center gap-2 font-semibold ${statusInfo.color}`}>
+              {statusInfo.icon}
+              <span>{statusInfo.text}</span>
             </div>
             <Button
               size="lg"
-              variant={getStatusInfo.variant}
+              variant={statusInfo.variant}
               className="h-12 w-full text-base"
-              onClick={onConnectToggle}
-              disabled={status === "connecting"}
+              onClick={() => void onConnectToggle()}
+              disabled={isBusy || status === "connecting"}
             >
-              <Power className="h-5 w-5 mr-2" />
-              <span>{getStatusInfo.button}</span>
+              <Power className="mr-2 h-5 w-5" />
+              {statusInfo.button}
             </Button>
-            <div className="w-full grid grid-cols-2 gap-2 text-center">
-              <div className="bg-muted p-2 rounded-md">
+            <div className="grid w-full grid-cols-2 gap-2 text-center">
+              <div className="rounded-md bg-muted p-2">
                 <p className="text-xs text-muted-foreground">Duration</p>
-                <p className="text-sm font-semibold flex items-center justify-center gap-1">
+                <p className="flex items-center justify-center gap-1 text-sm font-semibold">
                   <Clock className="h-4 w-4" />
-                  {formatUptime(uptime)}
+                  {uptime}
                 </p>
               </div>
-              <div className="bg-muted p-2 rounded-md">
-                <p className="text-xs text-muted-foreground">Data</p>
-                <p className="text-sm font-semibold flex items-center justify-center gap-1">
-                  <ArrowRightLeft className="h-4 w-4" />
-                  {`${data.down.toFixed(1)}MB↓/${data.up.toFixed(1)}MB↑`}
+              <div className="rounded-md bg-muted p-2">
+                <p className="text-xs text-muted-foreground">Mode</p>
+                <p className="flex items-center justify-center gap-1 text-sm font-semibold">
+                  <Globe className="h-4 w-4" />
+                  {modeLabel(state?.activeMode ?? null)}
                 </p>
               </div>
             </div>
+            {state?.lastError && (
+              <Alert variant="destructive" className="w-full p-3">
+                <AlertTitle className="text-xs">Last connection error</AlertTitle>
+                <AlertDescription className="text-xs">{state.lastError}</AlertDescription>
+              </Alert>
+            )}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="p-4">
-            <CardTitle className="text-base">Settings</CardTitle>
+            <CardTitle className="text-base">Connection settings</CardTitle>
           </CardHeader>
-          <CardContent className="p-4 pt-0 space-y-3">
+          <CardContent className="space-y-3 p-4 pt-0">
             <div className="space-y-1">
               <Label htmlFor="endpoint">API endpoint</Label>
-              <Input id="endpoint" value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://api.example.com" />
+              <Input id="endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} disabled={localMode} />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="token">Auth token (optional)</Label>
-              <Input id="token" value={token} onChange={(e) => setToken(e.target.value)} placeholder="token" />
+              <Label htmlFor="token">Auth token</Label>
+              <Input
+                id="token"
+                type="password"
+                value={token}
+                onChange={(event) => {
+                  setToken(event.target.value);
+                  setTokenChanged(true);
+                }}
+                placeholder="Optional"
+              />
             </div>
             <div className="flex items-center justify-between">
               <Label htmlFor="localMode">Use local proxy</Label>
-              <Switch id="localMode" checked={localMode} onCheckedChange={(v) => setLocalMode(Boolean(v))} />
+              <Switch id="localMode" checked={localMode} onCheckedChange={setLocalMode} />
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1 col-span-2">
-                <Label htmlFor="localHost">Local proxy host</Label>
-                <Input id="localHost" value={localHost} onChange={(e) => setLocalHost(e.target.value)} placeholder="127.0.0.1" />
+              <div className="col-span-2 space-y-1">
+                <Label htmlFor="localHost">Proxy host</Label>
+                <Input id="localHost" value={localHost} onChange={(event) => setLocalHost(event.target.value)} disabled={!localMode} />
               </div>
               <div className="space-y-1">
                 <Label htmlFor="localPort">Port</Label>
-                <Input id="localPort" type="number" value={localPort} onChange={(e) => setLocalPort(e.target.value)} placeholder="8080" />
+                <Input id="localPort" type="number" min="1" max="65535" value={localPort} onChange={(event) => setLocalPort(event.target.value)} disabled={!localMode} />
               </div>
               <div className="space-y-1">
                 <Label htmlFor="localScheme">Scheme</Label>
-                <select id="localScheme" className="border rounded h-9 px-2" value={localScheme} onChange={(e) => setLocalScheme(e.target.value as any)}>
+                <select id="localScheme" className="h-9 w-full rounded-md border bg-transparent px-2 text-sm" value={localScheme} onChange={(event) => setLocalScheme(event.target.value as "http" | "https")} disabled={!localMode}>
                   <option value="http">http</option>
                   <option value="https">https</option>
                 </select>
@@ -192,31 +305,17 @@ export default function PopupView() {
 
         <Card>
           <CardHeader className="p-4">
-            <CardTitle className="text-base">Activity Logs</CardTitle>
+            <CardTitle className="text-base">Activity</CardTitle>
           </CardHeader>
           <CardContent className="p-4 pt-0">
             <ScrollArea className="h-[120px] w-full rounded-md border p-2 font-mono text-xs">
-              {logs.map((log, i) => (
-                <p key={i} className="whitespace-pre-wrap leading-snug">{log}</p>
+              {logs.map((log, index) => (
+                <p key={`${log}-${index}`} className="whitespace-pre-wrap leading-snug">{log}</p>
               ))}
             </ScrollArea>
           </CardContent>
-          <CardFooter className="flex-col items-start gap-2 p-4 pt-0">
-            {analysis && (
-              <Alert className="p-2">
-                <AlertTitle className="text-xs font-semibold mb-0.5">AI Analysis</AlertTitle>
-                <AlertDescription className="text-xs">{analysis}</AlertDescription>
-              </Alert>
-            )}
-            <Button onClick={analyzeLogs} disabled={isAnalyzing} className="w-full h-9 text-sm">
-              {isAnalyzing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Globe className="mr-2 h-4 w-4" />}
-              Analyze Logs
-            </Button>
-          </CardFooter>
         </Card>
       </main>
     </div>
   );
 }
-
-
