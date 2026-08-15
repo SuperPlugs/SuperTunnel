@@ -68,4 +68,25 @@ describe("extension state validation", () => {
 
     expect(result.success).toBe(false);
   });
+
+  it("provides diagnostics defaults for older stored state", () => {
+    const result = extensionStateSchema.parse({
+      state: "disconnected",
+      lastError: null,
+      endpoint: "http://localhost:9002/api",
+      localMode: false,
+      localProxyHost: "127.0.0.1",
+      localProxyPort: 8080,
+      localProxyScheme: "http",
+      connectedAt: null,
+      activeMode: null,
+    });
+
+    expect(result.diagnostics).toMatchObject({
+      status: "unknown",
+      warp: "unknown",
+      gateway: "unknown",
+      traceUrl: "https://www.cloudflare.com/cdn-cgi/trace",
+    });
+  });
 });

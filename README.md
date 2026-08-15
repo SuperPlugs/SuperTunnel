@@ -12,6 +12,7 @@ SuperTunnel affects browser traffic only. It does not install an operating-syste
 - Optional bearer-token authentication
 - Runtime permission requests for custom API origins
 - Persisted configuration and connection-state reconciliation
+- Cloudflare trace diagnostics showing WARP, Gateway, colo, and Chrome proxy control
 - Strict TypeScript, ESLint, production builds, and GitHub Actions CI
 
 ## Architecture
@@ -23,6 +24,7 @@ Extension popup
         -> local proxy configuration
         -> or POST /api/connect
     -> chrome.proxy.settings
+    -> Cloudflare trace health check
 
 Next.js service
     -> environment-backed proxy profile
@@ -83,11 +85,18 @@ The popup supports two connection modes:
 - **Remote API:** obtains a validated PAC or fixed-proxy profile from `{API_ENDPOINT}/connect`.
 - **Local proxy:** directly applies the host, port, and scheme entered in the popup.
 
+After applying the Chrome proxy setting, the extension checks the configured
+Cloudflare trace URL. The diagnostics panel separates Chrome proxy control from
+traffic verification and reports WARP, Gateway, Cloudflare colo, and the last
+check time. Chrome may request access to the trace origin the first time the
+check runs.
+
 ## Configuration
 
 | Variable | Purpose |
 | --- | --- |
 | `VITE_API_ORIGIN` | API base URL embedded in the extension build |
+| `VITE_CLOUDFLARE_TRACE_URL` | Cloudflare trace URL used to verify browser traffic |
 | `SUPERTUNNEL_PAC_URL` | PAC script URL returned to clients |
 | `SUPERTUNNEL_PROXY_HOST` | Fixed proxy hostname or IP address |
 | `SUPERTUNNEL_PROXY_PORT` | Fixed proxy port from 1 to 65535 |

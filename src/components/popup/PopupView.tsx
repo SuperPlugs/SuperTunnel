@@ -2,10 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Activity,
+  CircleAlert,
+  CircleCheck,
   Clock,
   Globe,
   Loader2,
   Power,
+  RefreshCw,
   ShieldCheck,
   ShieldOff,
 } from "lucide-react";
@@ -21,6 +25,7 @@ import {
   extensionStateSchema,
   normalizeApiEndpoint,
   type ConnectionMode,
+  type ExtensionDiagnostics,
   type ExtensionState,
 } from "@/lib/contracts";
 import { Icons } from "@/components/icons";
@@ -70,6 +75,15 @@ async function sendCommand(message: Record<string, unknown>): Promise<void> {
   }
 }
 
+async function requestOriginPermission(originPattern: string): Promise<boolean> {
+  const alreadyGranted = await chrome.permissions.contains({
+    origins: [originPattern],
+  });
+  return alreadyGranted
+    ? true
+    : chrome.permissions.request({ origins: [originPattern] });
+}
+
 function modeLabel(mode: ConnectionMode | null): string {
   switch (mode) {
     case "local":
@@ -81,6 +95,52 @@ function modeLabel(mode: ConnectionMode | null): string {
     default:
       return "Not connected";
   }
+}
+
+function proxyModeLabel(mode: string | null): string {
+  switch (mode) {
+    case "fixed_servers":
+      return "Fixed servers";
+    case "pac_script":
+      return "PAC script";
+    case "direct":
+      return "Direct";
+    case "system":
+      return "System";
+    default:
+      return mode ?? "Unknown";
+  }
+}
+
+function controlLabel(level: string | null): string {
+  switch (level) {
+    case "controlled_by_this_extension":
+      return "SuperTunnel";
+    case "controllable_by_this_extension":
+      return "Available";
+    case "controlled_by_other_extensions":
+      return "Another extension";
+    case "not_controllable":
+      return "Policy locked";
+    default:
+      return level ?? "Unknown";
+  }
+}
+
+function traceSignalLabel(signal: ExtensionDiagnostics["warp"]): string {
+  return signal === "unknown" ? "Unknown" : signal.toUpperCase();
+}
+
+function diagnosticLog(diagnostics: ExtensionDiagnostics): string {
+  const signals = [
+    `WARP ${traceSignalLabel(diagnostics.warp)}`,
+    `Gateway ${traceSignalLabel(diagnostics.gateway)}`,
+    diagnostics.colo ? `colo ${diagnostics.colo}` : null,
+  ].filter(Boolean);
+
+  return diagnostics.error
+    ? `Cloudflare check failed: ${diagnostics.error}`
+    : `Cloudflare check passed: ${signals.join(", ")}`;
 }
 
 export default function PopupView() {
@@ -120,11 +180,21 @@ export default function PopupView() {
   }, [applyState]);
 
   useEffect(() => {
-    void sendStateMessage({ type: "get_state" }).then(applyState).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      setInitializationError(message);
-      addLog(`Unable to read extension state: ${message}`);
-    });
+    void sendStateMessage({ type: "get_state" })
+      .then((nextState) => {
+        applyState(nextState);
+        addLog(
+          `State restored: ${nextState.state}, ${proxyModeLabel(nextState.diagnostics.proxyMode)}, control ${controlLabel(nextState.diagnostics.levelOfControl)}.`,
+        );
+        if (nextState.diagnostics.checkedAt) {
+          addLog(diagnosticLog(nextState.diagnostics));
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setInitializationError(message);
+        addLog(`Unable to read extension state: ${message}`);
+      });
   }, [addLog, applyState]);
 
   useEffect(() => {
@@ -165,38 +235,86 @@ export default function PopupView() {
 
       if (!localMode) {
         const normalizedEndpoint = normalizeApiEndpoint(endpoint);
-        const permissionGranted = await chrome.permissions.request({
-          origins: [endpointPermissionPattern(normalizedEndpoint)],
-        });
+        const permissionGranted = await requestOriginPermission(
+          endpointPermissionPattern(normalizedEndpoint),
+        );
         if (!permissionGranted) {
           throw new Error("Permission to contact the API endpoint was denied");
         }
       }
 
-      const settings: Array<Promise<void>> = [
-        sendCommand({ type: "set_endpoint", endpoint }),
-        sendCommand({ type: "set_local_mode", enabled: localMode }),
-        sendCommand({
-          type: "set_local_proxy",
-          host: localHost,
-          port: localPort ? Number(localPort) : null,
-          scheme: localScheme,
-        }),
-      ];
+      await sendCommand({ type: "set_endpoint", endpoint });
+      await sendCommand({ type: "set_local_mode", enabled: localMode });
+      await sendCommand({
+        type: "set_local_proxy",
+        host: localHost,
+        port: localPort ? Number(localPort) : null,
+        scheme: localScheme,
+      });
       if (tokenChanged) {
-        settings.push(sendCommand({ type: "set_token", token }));
+        await sendCommand({ type: "set_token", token });
       }
-      await Promise.all(settings);
 
+      const tracePermissionGranted = await requestOriginPermission(
+        endpointPermissionPattern(state.diagnostics.traceUrl),
+      );
+      if (!tracePermissionGranted) {
+        addLog("Cloudflare trace permission was denied; proxy state will still be applied.");
+      }
+
+      setState((current) =>
+        current
+          ? {
+              ...current,
+              state: "connecting",
+              lastError: null,
+              connectedAt: null,
+              activeMode: null,
+              diagnostics: {
+                ...current.diagnostics,
+                status: "checking",
+                checkedAt: null,
+                error: null,
+              },
+            }
+          : current,
+      );
       const nextState = await sendStateMessage({ type: "connect" });
       applyState(nextState);
       setToken("");
       setTokenChanged(false);
       if (nextState.state === "connected") {
         addLog(`Connected using ${modeLabel(nextState.activeMode)}.`);
+        addLog(diagnosticLog(nextState.diagnostics));
       } else {
         addLog(nextState.lastError ?? "Connection failed.");
       }
+    } catch (error) {
+      addLog(error instanceof Error ? error.message : String(error));
+      await refresh().catch(() => undefined);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onCheckConnection = async () => {
+    if (isBusy || !state) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const permissionGranted = await requestOriginPermission(
+        endpointPermissionPattern(state.diagnostics.traceUrl),
+      );
+      if (!permissionGranted) {
+        throw new Error("Permission to contact the Cloudflare trace endpoint was denied");
+      }
+
+      addLog("Checking browser traffic through the active proxy...");
+      const nextState = await sendStateMessage({ type: "check_connection" });
+      applyState(nextState);
+      addLog(diagnosticLog(nextState.diagnostics));
     } catch (error) {
       addLog(error instanceof Error ? error.message : String(error));
       await refresh().catch(() => undefined);
@@ -236,6 +354,31 @@ export default function PopupView() {
       variant: "default" as const,
     },
   }[status];
+  const diagnostics = state?.diagnostics;
+  const settingsDisabled =
+    isBusy || status === "connected" || status === "connecting";
+  const diagnosticInfo = {
+    healthy: {
+      text: "WARP verified",
+      color: "text-green-600",
+      icon: <CircleCheck className="h-4 w-4 text-green-600" />,
+    },
+    checking: {
+      text: "Checking traffic",
+      color: "text-amber-600",
+      icon: <Loader2 className="h-4 w-4 animate-spin text-amber-600" />,
+    },
+    unhealthy: {
+      text: "Cloudflare check failed",
+      color: "text-red-600",
+      icon: <CircleAlert className="h-4 w-4 text-red-600" />,
+    },
+    unknown: {
+      text: "Traffic not checked",
+      color: "text-muted-foreground",
+      icon: <Activity className="h-4 w-4 text-muted-foreground" />,
+    },
+  }[diagnostics?.status ?? "unknown"];
 
   return (
     <div className="w-full min-w-[320px] bg-background p-4 text-foreground">
@@ -293,13 +436,62 @@ export default function PopupView() {
         </Card>
 
         <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-3 p-4 pb-2">
+            <div>
+              <CardTitle className="text-base">Connection diagnostics</CardTitle>
+              <div className={`mt-1 flex items-center gap-1.5 text-xs font-medium ${diagnosticInfo.color}`}>
+                {diagnosticInfo.icon}
+                <span>{diagnosticInfo.text}</span>
+              </div>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void onCheckConnection()}
+              disabled={isBusy || !state || status !== "connected"}
+              title="Check Cloudflare traffic"
+            >
+              <RefreshCw className={isBusy ? "animate-spin" : undefined} />
+              Check
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3 p-4 pt-2 text-xs">
+            <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2">
+              <dt className="text-muted-foreground">Chrome proxy</dt>
+              <dd className="font-medium">{proxyModeLabel(diagnostics?.proxyMode ?? null)}</dd>
+              <dt className="text-muted-foreground">Controlled by</dt>
+              <dd className="font-medium">{controlLabel(diagnostics?.levelOfControl ?? null)}</dd>
+              <dt className="text-muted-foreground">WARP</dt>
+              <dd className="font-medium">{traceSignalLabel(diagnostics?.warp ?? "unknown")}</dd>
+              <dt className="text-muted-foreground">Gateway</dt>
+              <dd className="font-medium">{traceSignalLabel(diagnostics?.gateway ?? "unknown")}</dd>
+              <dt className="text-muted-foreground">Cloudflare colo</dt>
+              <dd className="font-medium">{diagnostics?.colo ?? "Unknown"}</dd>
+              <dt className="text-muted-foreground">Last check</dt>
+              <dd className="font-medium">
+                {diagnostics?.checkedAt
+                  ? new Date(diagnostics.checkedAt).toLocaleTimeString()
+                  : "Never"}
+              </dd>
+            </dl>
+            {diagnostics?.error && (
+              <Alert variant="destructive" className="p-3">
+                <AlertTitle className="text-xs">Diagnostic detail</AlertTitle>
+                <AlertDescription className="text-xs">{diagnostics.error}</AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
           <CardHeader className="p-4">
             <CardTitle className="text-base">Connection settings</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 p-4 pt-0">
             <div className="space-y-1">
               <Label htmlFor="endpoint">API endpoint</Label>
-              <Input id="endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} disabled={localMode} />
+              <Input id="endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} disabled={localMode || settingsDisabled} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="token">Auth token</Label>
@@ -312,24 +504,25 @@ export default function PopupView() {
                   setTokenChanged(true);
                 }}
                 placeholder="Optional"
+                disabled={settingsDisabled}
               />
             </div>
             <div className="flex items-center justify-between">
               <Label htmlFor="localMode">Use local proxy</Label>
-              <Switch id="localMode" checked={localMode} onCheckedChange={setLocalMode} />
+              <Switch id="localMode" checked={localMode} onCheckedChange={setLocalMode} disabled={settingsDisabled} />
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div className="col-span-2 space-y-1">
                 <Label htmlFor="localHost">Proxy host</Label>
-                <Input id="localHost" value={localHost} onChange={(event) => setLocalHost(event.target.value)} disabled={!localMode} />
+                <Input id="localHost" value={localHost} onChange={(event) => setLocalHost(event.target.value)} disabled={!localMode || settingsDisabled} />
               </div>
               <div className="space-y-1">
                 <Label htmlFor="localPort">Port</Label>
-                <Input id="localPort" type="number" min="1" max="65535" value={localPort} onChange={(event) => setLocalPort(event.target.value)} disabled={!localMode} />
+                <Input id="localPort" type="number" min="1" max="65535" value={localPort} onChange={(event) => setLocalPort(event.target.value)} disabled={!localMode || settingsDisabled} />
               </div>
               <div className="space-y-1">
                 <Label htmlFor="localScheme">Scheme</Label>
-                <select id="localScheme" className="h-9 w-full rounded-md border bg-transparent px-2 text-sm" value={localScheme} onChange={(event) => setLocalScheme(event.target.value as "http" | "https")} disabled={!localMode}>
+                <select id="localScheme" className="h-9 w-full rounded-md border bg-transparent px-2 text-sm" value={localScheme} onChange={(event) => setLocalScheme(event.target.value as "http" | "https")} disabled={!localMode || settingsDisabled}>
                   <option value="http">http</option>
                   <option value="https">https</option>
                 </select>

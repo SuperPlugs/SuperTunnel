@@ -24,6 +24,41 @@ export const connectionModeSchema = z.enum([
   "remote-fixed",
 ]);
 
+export const diagnosticStatusSchema = z.enum([
+  "unknown",
+  "checking",
+  "healthy",
+  "unhealthy",
+]);
+export const traceSignalSchema = z.enum(["on", "off", "unknown"]);
+
+export const DEFAULT_CLOUDFLARE_TRACE_URL =
+  "https://www.cloudflare.com/cdn-cgi/trace";
+
+export const extensionDiagnosticsSchema = z.object({
+  status: diagnosticStatusSchema,
+  checkedAt: z.number().int().nonnegative().nullable(),
+  traceUrl: httpUrlSchema,
+  warp: traceSignalSchema,
+  gateway: traceSignalSchema,
+  colo: z.string().nullable(),
+  proxyMode: z.string().nullable(),
+  levelOfControl: z.string().nullable(),
+  error: z.string().nullable(),
+});
+
+export const DEFAULT_DIAGNOSTICS: ExtensionDiagnostics = {
+  status: "unknown",
+  checkedAt: null,
+  traceUrl: DEFAULT_CLOUDFLARE_TRACE_URL,
+  warp: "unknown",
+  gateway: "unknown",
+  colo: null,
+  proxyMode: null,
+  levelOfControl: null,
+  error: null,
+};
+
 export const extensionStateSchema = z.object({
   state: connectionStateSchema,
   lastError: z.string().nullable(),
@@ -34,6 +69,7 @@ export const extensionStateSchema = z.object({
   localProxyScheme: proxySchemeSchema,
   connectedAt: z.number().int().nonnegative().nullable(),
   activeMode: connectionModeSchema.nullable(),
+  diagnostics: extensionDiagnosticsSchema.default(DEFAULT_DIAGNOSTICS),
 });
 
 const fixedProxySchema = z.object({
@@ -62,6 +98,7 @@ export type ConnectResponse = z.infer<typeof connectResponseSchema>;
 export type ProxyScheme = z.infer<typeof proxySchemeSchema>;
 export type ConnectionState = z.infer<typeof connectionStateSchema>;
 export type ConnectionMode = z.infer<typeof connectionModeSchema>;
+export type ExtensionDiagnostics = z.infer<typeof extensionDiagnosticsSchema>;
 export type ExtensionState = z.infer<typeof extensionStateSchema>;
 
 export function normalizeApiEndpoint(value: string): string {

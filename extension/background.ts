@@ -1,17 +1,24 @@
 import {
   connectResponseSchema,
+  DEFAULT_CLOUDFLARE_TRACE_URL,
+  DEFAULT_DIAGNOSTICS,
   DEFAULT_API_ENDPOINT,
   extensionStateSchema,
   normalizeApiEndpoint,
   type ConnectionMode,
   type ConnectionState,
+  type ExtensionDiagnostics,
   type ExtensionState,
 } from "../src/lib/contracts";
+import { assessCloudflareTrace, parseCloudflareTrace } from "../src/lib/cloudflare-trace";
 
 type StoredState = ExtensionState;
 
 const DEFAULT_ENDPOINT = normalizeApiEndpoint(
   import.meta.env.VITE_API_ORIGIN || DEFAULT_API_ENDPOINT,
+);
+const CLOUDFLARE_TRACE_URL = normalizeApiEndpoint(
+  import.meta.env.VITE_CLOUDFLARE_TRACE_URL || DEFAULT_CLOUDFLARE_TRACE_URL,
 );
 
 const DEFAULT_STATE: StoredState = {
@@ -24,6 +31,10 @@ const DEFAULT_STATE: StoredState = {
   localProxyScheme: "http",
   connectedAt: null,
   activeMode: null,
+  diagnostics: {
+    ...DEFAULT_DIAGNOSTICS,
+    traceUrl: CLOUDFLARE_TRACE_URL,
+  },
 };
 
 async function readState(): Promise<StoredState> {
@@ -41,6 +52,27 @@ async function readState(): Promise<StoredState> {
 
 async function writeState(partial: Partial<StoredState>): Promise<void> {
   await chrome.storage.local.set(partial);
+}
+
+async function writeDiagnostics(
+  partial: Partial<ExtensionDiagnostics>,
+): Promise<void> {
+  const state = await readState();
+  await chrome.storage.local.set({
+    diagnostics: { ...state.diagnostics, ...partial },
+  });
+}
+
+function resetDiagnostics(
+  proxyMode: string | null = null,
+  levelOfControl: string | null = null,
+): ExtensionDiagnostics {
+  return {
+    ...DEFAULT_DIAGNOSTICS,
+    traceUrl: CLOUDFLARE_TRACE_URL,
+    proxyMode,
+    levelOfControl,
+  };
 }
 
 async function readToken(): Promise<string | undefined> {
@@ -115,6 +147,31 @@ function proxySettingsGet(): Promise<
   });
 }
 
+interface ProxyObservation {
+  mode: string | null;
+  levelOfControl: string | null;
+  controlledBySuperTunnel: boolean;
+}
+
+function observeProxySettings(
+  settings: chrome.types.ChromeSettingGetResult<chrome.proxy.ProxyConfig>,
+): ProxyObservation {
+  const value = settings.value as { mode?: unknown } | undefined;
+  const mode = typeof value?.mode === "string" ? value.mode : null;
+  const levelOfControl =
+    typeof settings.levelOfControl === "string" ? settings.levelOfControl : null;
+
+  return {
+    mode,
+    levelOfControl,
+    controlledBySuperTunnel:
+      levelOfControl === "controlled_by_this_extension" &&
+      mode !== null &&
+      mode !== "direct" &&
+      mode !== "system",
+  };
+}
+
 function validateLocalProxy(state: StoredState): void {
   if (!state.localProxyHost.trim()) {
     throw new Error("Local proxy host is required");
@@ -167,8 +224,102 @@ async function fetchConnectionProfile(
   }
 }
 
+async function checkCloudflareTraffic(
+  observation: ProxyObservation,
+): Promise<ExtensionDiagnostics> {
+  const base = {
+    traceUrl: CLOUDFLARE_TRACE_URL,
+    proxyMode: observation.mode,
+    levelOfControl: observation.levelOfControl,
+  };
+
+  if (!observation.controlledBySuperTunnel) {
+    return {
+      ...resetDiagnostics(observation.mode, observation.levelOfControl),
+      ...base,
+      status: "unhealthy",
+      checkedAt: Date.now(),
+      error: "Chrome is not using a proxy controlled by SuperTunnel",
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    const response = await fetch(CLOUDFLARE_TRACE_URL, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    const body = await response.text();
+    if (!response.ok) {
+      throw new Error(`Cloudflare trace returned HTTP ${response.status}`);
+    }
+
+    const trace = parseCloudflareTrace(body);
+    const error = assessCloudflareTrace(trace);
+    return {
+      ...resetDiagnostics(observation.mode, observation.levelOfControl),
+      ...base,
+      status: error ? "unhealthy" : "healthy",
+      checkedAt: Date.now(),
+      warp: trace.warp,
+      gateway: trace.gateway,
+      colo: trace.colo,
+      error,
+    };
+  } catch (error) {
+    const message =
+      error instanceof DOMException && error.name === "AbortError"
+        ? "Cloudflare trace timed out after 10 seconds"
+        : error instanceof Error
+          ? error.message
+          : String(error);
+    return {
+      ...resetDiagnostics(observation.mode, observation.levelOfControl),
+      ...base,
+      status: "unhealthy",
+      checkedAt: Date.now(),
+      error: `Unable to verify Cloudflare traffic: ${message}`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function checkConnection(): Promise<StoredState> {
+  const current = await reconcileProxyState();
+  if (current.state !== "connected") {
+    await writeDiagnostics({
+      ...resetDiagnostics(
+        current.diagnostics.proxyMode,
+        current.diagnostics.levelOfControl,
+      ),
+      error: "Connect the proxy before checking Cloudflare traffic",
+    });
+    return readState();
+  }
+
+  await writeDiagnostics({
+    status: "checking",
+    checkedAt: null,
+    traceUrl: CLOUDFLARE_TRACE_URL,
+    error: null,
+  });
+  const settings = await proxySettingsGet();
+  const diagnostics = await checkCloudflareTraffic(observeProxySettings(settings));
+  await writeState({ diagnostics });
+  return readState();
+}
+
 async function connectProxy(): Promise<StoredState> {
-  await writeState({ state: "connecting", lastError: null });
+  await writeState({
+    state: "connecting",
+    lastError: null,
+    connectedAt: null,
+    activeMode: null,
+    diagnostics: resetDiagnostics(),
+  });
   await setBadge("connecting");
 
   try {
@@ -223,15 +374,23 @@ async function connectProxy(): Promise<StoredState> {
       lastError: null,
       connectedAt: Date.now(),
       activeMode,
+      diagnostics: resetDiagnostics(
+        activeMode === "remote-pac" ? "pac_script" : "fixed_servers",
+        "controlled_by_this_extension",
+      ),
     });
     await setBadge("connected");
+
+    return checkConnection();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    await proxySettingsClear().catch(() => undefined);
     await writeState({
       state: "error",
       lastError: message,
       connectedAt: null,
       activeMode: null,
+      diagnostics: resetDiagnostics(),
     });
     await setBadge("error");
   }
@@ -247,33 +406,87 @@ async function disconnectProxy(): Promise<StoredState> {
       lastError: null,
       connectedAt: null,
       activeMode: null,
+      diagnostics: resetDiagnostics(),
     });
     await setBadge("disconnected");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await writeState({ state: "error", lastError: message });
+    await writeState({
+      state: "error",
+      lastError: message,
+      diagnostics: {
+        ...resetDiagnostics(),
+        status: "unhealthy",
+        checkedAt: Date.now(),
+        error: message,
+      },
+    });
     await setBadge("error");
   }
 
   return readState();
 }
 
+async function updateConfiguration(
+  partial: Partial<
+    Pick<
+      StoredState,
+      | "endpoint"
+      | "localMode"
+      | "localProxyHost"
+      | "localProxyPort"
+      | "localProxyScheme"
+    >
+  >,
+): Promise<void> {
+  const state = await readState();
+  const hasActiveProxy =
+    state.state === "connected" ||
+    state.state === "connecting" ||
+    state.activeMode !== null;
+
+  if (hasActiveProxy) {
+    await proxySettingsClear();
+  }
+
+  await writeState({
+    ...partial,
+    ...(hasActiveProxy
+      ? {
+          state: "disconnected" as const,
+          lastError: null,
+          connectedAt: null,
+          activeMode: null,
+          diagnostics: resetDiagnostics(),
+        }
+      : {}),
+  });
+
+  if (hasActiveProxy) {
+    await setBadge("disconnected");
+  }
+}
+
 async function reconcileProxyState(): Promise<StoredState> {
   const state = await readState();
   const settings = await proxySettingsGet();
-  const proxyMode = (settings.value as { mode?: string } | undefined)?.mode;
-  const controlledBySuperTunnel =
-    settings.levelOfControl === "controlled_by_this_extension" &&
-    proxyMode !== "direct" &&
-    proxyMode !== "system";
+  const observation = observeProxySettings(settings);
+  const diagnostics = {
+    ...state.diagnostics,
+    proxyMode: observation.mode,
+    levelOfControl: observation.levelOfControl,
+  };
 
-  if (controlledBySuperTunnel) {
+  if (observation.controlledBySuperTunnel) {
     const nextState: StoredState = {
       ...state,
       state: "connected",
       lastError: null,
       connectedAt: state.connectedAt ?? Date.now(),
-      activeMode: state.activeMode ?? (proxyMode === "pac_script" ? "remote-pac" : "remote-fixed"),
+      activeMode:
+        state.activeMode ??
+        (observation.mode === "pac_script" ? "remote-pac" : "remote-fixed"),
+      diagnostics,
     };
     await writeState(nextState);
     await setBadge("connected");
@@ -286,14 +499,20 @@ async function reconcileProxyState(): Promise<StoredState> {
       state: "disconnected",
       connectedAt: null,
       activeMode: null,
+      diagnostics: resetDiagnostics(
+        observation.mode,
+        observation.levelOfControl,
+      ),
     };
     await writeState(nextState);
     await setBadge("disconnected");
     return nextState;
   }
 
-  await setBadge(state.state);
-  return state;
+  const nextState = { ...state, diagnostics };
+  await writeState(nextState);
+  await setBadge(nextState.state);
+  return nextState;
 }
 
 async function initialize(): Promise<void> {
@@ -314,6 +533,12 @@ async function initializeSafely(): Promise<void> {
       lastError: `Extension initialization failed: ${message}`,
       connectedAt: null,
       activeMode: null,
+      diagnostics: {
+        ...resetDiagnostics(),
+        status: "unhealthy",
+        checkedAt: Date.now(),
+        error: message,
+      },
     }).catch(() => undefined);
     await setBadge("error").catch(() => undefined);
   }
@@ -338,17 +563,24 @@ async function handleMessage(request: unknown): Promise<unknown> {
   const message = request as Record<string, unknown>;
   switch (message.type) {
     case "get_state":
-      return reconcileProxyState();
+      return enqueue(reconcileProxyState);
+    case "check_connection":
+      return enqueue(checkConnection);
     case "set_token":
-      await writeToken(typeof message.token === "string" ? message.token : "");
-      return { ok: true };
+      return enqueue(async () => {
+        await writeToken(typeof message.token === "string" ? message.token : "");
+        return { ok: true };
+      });
     case "set_endpoint": {
       if (typeof message.endpoint !== "string") {
         return { ok: false, error: "API endpoint is required" };
       }
       try {
-        await writeState({ endpoint: normalizeApiEndpoint(message.endpoint) });
-        return { ok: true };
+        const endpoint = normalizeApiEndpoint(message.endpoint);
+        return enqueue(async () => {
+          await updateConfiguration({ endpoint });
+          return { ok: true };
+        });
       } catch (error) {
         return {
           ok: false,
@@ -357,19 +589,23 @@ async function handleMessage(request: unknown): Promise<unknown> {
       }
     }
     case "set_local_mode":
-      await writeState({ localMode: Boolean(message.enabled) });
-      return { ok: true };
-    case "set_local_proxy":
-      await writeState({
-        localProxyHost:
-          typeof message.host === "string" ? message.host.trim() : "",
-        localProxyPort:
-          typeof message.port === "number" && Number.isFinite(message.port)
-            ? message.port
-            : null,
-        localProxyScheme: message.scheme === "https" ? "https" : "http",
+      return enqueue(async () => {
+        await updateConfiguration({ localMode: Boolean(message.enabled) });
+        return { ok: true };
       });
-      return { ok: true };
+    case "set_local_proxy":
+      return enqueue(async () => {
+        await updateConfiguration({
+          localProxyHost:
+            typeof message.host === "string" ? message.host.trim() : "",
+          localProxyPort:
+            typeof message.port === "number" && Number.isFinite(message.port)
+              ? message.port
+              : null,
+          localProxyScheme: message.scheme === "https" ? "https" : "http",
+        });
+        return { ok: true };
+      });
     case "connect":
       return enqueue(connectProxy);
     case "disconnect":
@@ -380,11 +616,11 @@ async function handleMessage(request: unknown): Promise<unknown> {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  void initializeSafely();
+  void enqueue(initializeSafely);
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void initializeSafely();
+  void enqueue(initializeSafely);
 });
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
@@ -400,4 +636,4 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   return true;
 });
 
-void initializeSafely();
+void enqueue(initializeSafely);
