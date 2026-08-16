@@ -6,6 +6,19 @@ export interface ManifestOptions {
   firefoxId?: string;
 }
 
+export type GeckoDataCollectionCategory =
+  | "none"
+  | "authenticationInfo"
+  | "bookmarksInfo"
+  | "browsingActivity"
+  | "financialAndPaymentInfo"
+  | "healthInfo"
+  | "locationInfo"
+  | "personalCommunications"
+  | "searchQueries"
+  | "technicalAndInteractionData"
+  | "userGeneratedContent";
+
 export interface ExtensionManifest {
   manifest_version: 3;
   name: string;
@@ -32,6 +45,10 @@ export interface ExtensionManifest {
     gecko: {
       id: string;
       strict_min_version: string;
+      data_collection_permissions?: {
+        required: GeckoDataCollectionCategory[];
+        optional?: GeckoDataCollectionCategory[];
+      };
     };
   };
 }
@@ -82,7 +99,10 @@ export function createManifest(
       browser_specific_settings: {
         gecko: {
           id: firefoxId,
-          strict_min_version: "115.0",
+          strict_min_version: "128.0",
+          data_collection_permissions: {
+            required: ["none"],
+          },
         },
       },
     };

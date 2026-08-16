@@ -33,7 +33,10 @@ describe("Extension Manifest Generator", () => {
     expect(manifest.host_permissions).toContain("https://example.com/*");
     expect(manifest.browser_specific_settings?.gecko).toEqual({
       id: "custom-id@supertunnel.local",
-      strict_min_version: "115.0",
+      strict_min_version: "128.0",
+      data_collection_permissions: {
+        required: ["none"],
+      },
     });
   });
 });

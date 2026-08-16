@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
   )
 
   return {
-    plugins: [react(), crx({ manifest: createManifest(apiEndpoint) })],
+    plugins: [react(), crx({ manifest: createManifest(apiEndpoint) as any })],
     build: {
       outDir: 'dist-extension',
       emptyOutDir: true,

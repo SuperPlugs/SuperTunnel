@@ -38,7 +38,17 @@ if (manifest.manifest_version !== 3 && manifest.manifest_version !== 2) {
 
 const geckoId = manifest.browser_specific_settings?.gecko?.id;
 if (!geckoId || typeof geckoId !== "string" || !geckoId.trim()) {
-  errors.push("Missing browser_specific_settings.gecko.id in manifest.json (required for Firefox Add-ons)");
+  errors.push(
+    "Missing browser_specific_settings.gecko.id in manifest.json (required for Firefox Add-ons)",
+  );
+}
+
+const dataConsent =
+  manifest.browser_specific_settings?.gecko?.data_collection_permissions;
+if (!dataConsent || !Array.isArray(dataConsent.required)) {
+  errors.push(
+    "Missing browser_specific_settings.gecko.data_collection_permissions in manifest.json (required by Mozilla AMO)",
+  );
 }
 
 const popupPath = manifest.action?.default_popup;
