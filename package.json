@@ -24,10 +24,11 @@
     "dev:extension": "vite build --watch --config vite.config.ts",
     "build:extension": "vite build --config vite.config.ts",
     "build:firefox": "vite build --config vite.config.firefox.ts",
+    "package:chrome": "pnpm build:extension && node scripts/package-chrome.mjs",
     "package:firefox": "pnpm build:firefox && node scripts/package-firefox.mjs",
-    "package": "pnpm build:extension && pnpm package:firefox",
+    "package": "pnpm package:chrome && pnpm package:firefox",
     "gen:icons": "node scripts/gen-icons.mjs",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build:extension && pnpm package:firefox && pnpm build"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm package && pnpm build"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.15",
