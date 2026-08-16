@@ -44,3 +44,4 @@ next-env.d.ts
 
 # build file
 /dist-extension
+/dist-firefox

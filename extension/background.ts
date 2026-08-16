@@ -106,7 +106,90 @@ async function setBadge(state: ConnectionState): Promise<void> {
   ]);
 }
 
-function proxySettingsSet(value: chrome.proxy.ProxyConfig): Promise<void> {
+declare const browser:
+  | {
+      proxy?: {
+        settings?: {
+          set(details: { value: unknown }): Promise<void> | void;
+          clear(details: Record<string, unknown>): Promise<void> | void;
+          get(details: { incognito?: boolean }): Promise<unknown> | void;
+        };
+      };
+      runtime?: {
+        getBrowserInfo?: () => Promise<{
+          name: string;
+          vendor: string;
+          version: string;
+          buildID: string;
+        }>;
+      };
+    }
+  | undefined;
+
+function isFirefoxEnvironment(): boolean {
+  if (
+    typeof navigator !== "undefined" &&
+    navigator.userAgent.toLowerCase().includes("firefox")
+  ) {
+    return true;
+  }
+  if (
+    typeof browser !== "undefined" &&
+    typeof browser.runtime?.getBrowserInfo === "function"
+  ) {
+    return true;
+  }
+  return false;
+}
+
+type UniversalProxyTarget =
+  | {
+      type: "pac";
+      pacUrl: string;
+    }
+  | {
+      type: "fixed";
+      host: string;
+      port: number;
+      scheme: "http" | "https";
+      bypassList?: string[];
+    };
+
+function setFirefoxProxy(value: Record<string, unknown>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const ffBrowser = typeof browser !== "undefined" ? browser : undefined;
+    if (ffBrowser?.proxy?.settings?.set) {
+      try {
+        const maybePromise = ffBrowser.proxy.settings.set({ value });
+        if (
+          maybePromise &&
+          typeof (maybePromise as Promise<void>).then === "function"
+        ) {
+          (maybePromise as Promise<void>).then(() => resolve(), reject);
+          return;
+        }
+      } catch {
+        // Fallback to chrome compatibility callback
+      }
+    }
+
+    const setFn = chrome.proxy.settings.set as (
+      details: { value: unknown; scope?: string },
+      callback?: () => void,
+    ) => void;
+
+    setFn({ value, scope: "regular" }, () => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function setChromeProxy(value: chrome.proxy.ProxyConfig): Promise<void> {
   return new Promise((resolve, reject) => {
     chrome.proxy.settings.set({ value, scope: "regular" }, () => {
       const error = chrome.runtime.lastError;
@@ -119,8 +202,86 @@ function proxySettingsSet(value: chrome.proxy.ProxyConfig): Promise<void> {
   });
 }
 
+function proxySettingsSet(config: UniversalProxyTarget): Promise<void> {
+  if (isFirefoxEnvironment()) {
+    let value: Record<string, unknown>;
+    if (config.type === "pac") {
+      value = {
+        proxyType: "autoConfig",
+        autoConfigUrl: config.pacUrl,
+      };
+    } else {
+      const url = `${config.scheme}://${config.host}:${config.port}`;
+      const passthrough =
+        config.bypassList && config.bypassList.length > 0
+          ? config.bypassList.join(", ")
+          : "<local>, localhost, 127.0.0.1";
+      value = {
+        proxyType: "manual",
+        http: url,
+        ssl: url,
+        httpProxyAll: true,
+        passthrough,
+      };
+    }
+    return setFirefoxProxy(value);
+  }
+
+  let value: chrome.proxy.ProxyConfig;
+  if (config.type === "pac") {
+    value = {
+      mode: "pac_script",
+      pacScript: { url: config.pacUrl },
+    };
+  } else {
+    value = {
+      mode: "fixed_servers",
+      rules: {
+        singleProxy: {
+          scheme: config.scheme,
+          host: config.host,
+          port: config.port,
+        },
+        bypassList: config.bypassList || ["<local>"],
+      },
+    };
+  }
+  return setChromeProxy(value);
+}
+
 function proxySettingsClear(): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (isFirefoxEnvironment()) {
+      const ffBrowser = typeof browser !== "undefined" ? browser : undefined;
+      if (ffBrowser?.proxy?.settings?.clear) {
+        try {
+          const maybePromise = ffBrowser.proxy.settings.clear({});
+          if (
+            maybePromise &&
+            typeof (maybePromise as Promise<void>).then === "function"
+          ) {
+            (maybePromise as Promise<void>).then(() => resolve(), reject);
+            return;
+          }
+        } catch {
+          // Fallback to chrome callback
+        }
+      }
+      const clearFn = chrome.proxy.settings.clear as (
+        details: { scope?: string },
+        callback?: () => void,
+      ) => void;
+      clearFn({ scope: "regular" }, () => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        resolve();
+      });
+      return;
+    }
+
     chrome.proxy.settings.clear({ scope: "regular" }, () => {
       const error = chrome.runtime.lastError;
       if (error) {
@@ -132,17 +293,40 @@ function proxySettingsClear(): Promise<void> {
   });
 }
 
-function proxySettingsGet(): Promise<
-  chrome.types.ChromeSettingGetResult<chrome.proxy.ProxyConfig>
-> {
+function proxySettingsGet(): Promise<{
+  value?: unknown;
+  levelOfControl?: string;
+}> {
   return new Promise((resolve, reject) => {
+    if (isFirefoxEnvironment()) {
+      const ffBrowser = typeof browser !== "undefined" ? browser : undefined;
+      if (ffBrowser?.proxy?.settings?.get) {
+        try {
+          const maybePromise = ffBrowser.proxy.settings.get({});
+          if (
+            maybePromise &&
+            typeof (maybePromise as Promise<unknown>).then === "function"
+          ) {
+            (maybePromise as Promise<unknown>).then(
+              (res) =>
+                resolve(res as { value?: unknown; levelOfControl?: string }),
+              reject,
+            );
+            return;
+          }
+        } catch {
+          // Fallback to chrome callback
+        }
+      }
+    }
+
     chrome.proxy.settings.get({ incognito: false }, (details) => {
       const error = chrome.runtime.lastError;
       if (error) {
         reject(new Error(error.message));
         return;
       }
-      resolve(details);
+      resolve(details as { value?: unknown; levelOfControl?: string });
     });
   });
 }
@@ -153,11 +337,24 @@ interface ProxyObservation {
   controlledBySuperTunnel: boolean;
 }
 
-function observeProxySettings(
-  settings: chrome.types.ChromeSettingGetResult<chrome.proxy.ProxyConfig>,
-): ProxyObservation {
-  const value = settings.value as { mode?: unknown } | undefined;
-  const mode = typeof value?.mode === "string" ? value.mode : null;
+function observeProxySettings(settings: {
+  value?: unknown;
+  levelOfControl?: string;
+}): ProxyObservation {
+  const value = settings.value as Record<string, unknown> | undefined;
+  let mode: string | null = null;
+  if (typeof value?.mode === "string") {
+    mode = value.mode;
+  } else if (typeof value?.proxyType === "string") {
+    if (value.proxyType === "manual") {
+      mode = "fixed_servers";
+    } else if (value.proxyType === "autoConfig") {
+      mode = "pac_script";
+    } else {
+      mode = value.proxyType;
+    }
+  }
+
   const levelOfControl =
     typeof settings.levelOfControl === "string" ? settings.levelOfControl : null;
 
@@ -168,7 +365,8 @@ function observeProxySettings(
       levelOfControl === "controlled_by_this_extension" &&
       mode !== null &&
       mode !== "direct" &&
-      mode !== "system",
+      mode !== "system" &&
+      mode !== "none",
   };
 }
 
@@ -324,21 +522,17 @@ async function connectProxy(): Promise<StoredState> {
 
   try {
     const state = await readState();
-    let proxyConfig: chrome.proxy.ProxyConfig;
+    let proxyTarget: UniversalProxyTarget;
     let activeMode: ConnectionMode;
 
     if (state.localMode) {
       validateLocalProxy(state);
-      proxyConfig = {
-        mode: "fixed_servers",
-        rules: {
-          singleProxy: {
-            scheme: state.localProxyScheme,
-            host: state.localProxyHost.trim(),
-            port: state.localProxyPort!,
-          },
-          bypassList: ["<local>"],
-        },
+      proxyTarget = {
+        type: "fixed",
+        scheme: state.localProxyScheme,
+        host: state.localProxyHost.trim(),
+        port: state.localProxyPort!,
+        bypassList: ["<local>"],
       };
       activeMode = "local";
     } else {
@@ -351,24 +545,24 @@ async function connectProxy(): Promise<StoredState> {
       }
 
       if ("pacUrl" in parsed.data) {
-        proxyConfig = {
-          mode: "pac_script",
-          pacScript: { url: parsed.data.pacUrl },
+        proxyTarget = {
+          type: "pac",
+          pacUrl: parsed.data.pacUrl,
         };
         activeMode = "remote-pac";
       } else {
-        proxyConfig = {
-          mode: "fixed_servers",
-          rules: {
-            singleProxy: parsed.data.proxy,
-            bypassList: parsed.data.bypassList,
-          },
+        proxyTarget = {
+          type: "fixed",
+          scheme: parsed.data.proxy.scheme,
+          host: parsed.data.proxy.host,
+          port: parsed.data.proxy.port,
+          bypassList: parsed.data.bypassList,
         };
         activeMode = "remote-fixed";
       }
     }
 
-    await proxySettingsSet(proxyConfig);
+    await proxySettingsSet(proxyTarget);
     await writeState({
       state: "connected",
       lastError: null,

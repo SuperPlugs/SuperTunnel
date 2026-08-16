@@ -72,6 +72,8 @@ The status dashboard and API run at `http://localhost:9002`:
 
 ## Build the Extension
 
+### Chrome / Chromium Extension
+
 The default development endpoint is `http://localhost:9002/api`. Override it with `VITE_API_ORIGIN` when building for another deployment.
 
 ```bash
@@ -80,15 +82,43 @@ pnpm build:extension
 
 Load `dist-extension/` from `chrome://extensions` using **Load unpacked**.
 
+### Firefox Add-on & Mozilla Packaging
+
+Build the Firefox WebExtension and create a release package (`.zip` and `.xpi`) ready to upload to Mozilla Add-ons (AMO):
+
+```bash
+pnpm package:firefox
+```
+
+This generates:
+- **`dist-firefox/`** – Unpacked Firefox extension directory.
+- **`dist-firefox/supertunnel-firefox.zip`** – Complete ZIP package for [addons.mozilla.org (AMO)](https://addons.mozilla.org/).
+- **`dist-firefox/supertunnel-firefox.xpi`** – Direct Firefox Add-on bundle.
+
+#### Testing Locally in Firefox
+1. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`.
+2. Click **Load Temporary Add-on...**.
+3. Select `dist-firefox/manifest.json` or `dist-firefox/supertunnel-firefox.zip`.
+
+#### Publishing to Mozilla Add-ons (AMO)
+1. Sign in to the [Mozilla Add-on Developer Hub](https://addons.mozilla.org/developers/addon/submit/upload-listed).
+2. Upload `dist-firefox/supertunnel-firefox.zip`.
+3. If needed, customize the Gecko extension ID before building:
+   ```bash
+   FIREFOX_EXTENSION_ID="your-extension-id@example.com" pnpm package:firefox
+   ```
+
+---
+
 The popup supports two connection modes:
 
 - **Remote API:** obtains a validated PAC or fixed-proxy profile from `{API_ENDPOINT}/connect`.
 - **Local proxy:** directly applies the host, port, and scheme entered in the popup.
 
-After applying the Chrome proxy setting, the extension checks the configured
-Cloudflare trace URL. The diagnostics panel separates Chrome proxy control from
+After applying the browser proxy setting, the extension checks the configured
+Cloudflare trace URL. The diagnostics panel separates browser proxy control from
 traffic verification and reports WARP, Gateway, Cloudflare colo, and the last
-check time. Chrome may request access to the trace origin the first time the
+check time. The browser may request access to the trace origin the first time the
 check runs.
 
 ## Configuration
@@ -97,11 +127,12 @@ check runs.
 | --- | --- |
 | `VITE_API_ORIGIN` | API base URL embedded in the extension build |
 | `VITE_CLOUDFLARE_TRACE_URL` | Cloudflare trace URL used to verify browser traffic |
+| `FIREFOX_EXTENSION_ID` | Custom Gecko Add-on ID for Firefox (`supertunnel@supertunnel.local` by default) |
 | `SUPERTUNNEL_PAC_URL` | PAC script URL returned to clients |
 | `SUPERTUNNEL_PROXY_HOST` | Fixed proxy hostname or IP address |
 | `SUPERTUNNEL_PROXY_PORT` | Fixed proxy port from 1 to 65535 |
 | `SUPERTUNNEL_PROXY_SCHEME` | `http` or `https` |
-| `SUPERTUNNEL_BYPASS_LIST` | Comma-separated Chrome proxy bypass rules |
+| `SUPERTUNNEL_BYPASS_LIST` | Comma-separated browser proxy bypass rules |
 | `SUPERTUNNEL_API_TOKEN` | Optional bearer token required by `/api/connect` |
 
 PAC configuration takes precedence when both PAC and fixed-proxy variables are present.
@@ -140,8 +171,12 @@ pnpm dev                 # Next.js development server on port 9002
 pnpm dev:extension       # Watch a self-contained extension build
 pnpm lint                # ESLint
 pnpm typecheck           # TypeScript without emit
+pnpm test                # Vitest unit tests
 pnpm build               # Next.js production build
-pnpm build:extension     # Manifest V3 production bundle
+pnpm build:extension     # Chrome Manifest V3 production bundle
+pnpm build:firefox       # Firefox Manifest V3 production bundle
+pnpm package:firefox     # Build and package Firefox Add-on (.zip and .xpi for AMO)
+pnpm package             # Build all browser extension bundles and packages
 pnpm check               # Complete local verification pipeline
 ```
 

@@ -18,13 +18,16 @@
     "dev": "next dev --turbopack -p 9002",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint src extension scripts vite.config.ts next.config.ts eslint.config.mjs postcss.config.mjs",
+    "lint": "eslint src extension scripts vite.config.ts vite.config.firefox.ts next.config.ts eslint.config.mjs postcss.config.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "dev:extension": "vite build --watch --config vite.config.ts",
     "build:extension": "vite build --config vite.config.ts",
+    "build:firefox": "vite build --config vite.config.firefox.ts",
+    "package:firefox": "pnpm build:firefox && node scripts/package-firefox.mjs",
+    "package": "pnpm build:extension && pnpm package:firefox",
     "gen:icons": "node scripts/gen-icons.mjs",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build:extension && pnpm build"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build:extension && pnpm package:firefox && pnpm build"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.15",
